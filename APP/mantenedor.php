@@ -57,6 +57,12 @@ function valorCampo($f, $post) {
     $v = trim($post[$f['col']] ?? '');
     if ($v === '' && $f['null']) { return null; }
     if ($f['kind'] === 'decimal') { $v = str_replace(',', '.', $v); }
+    if ($f['kind'] === 'horario') {
+        // Dos campos de hora (inicio y fin) -> "HH:MM-HH:MM"
+        $ini = trim($post[$f['col'] . '_ini'] ?? '');
+        $fin = trim($post[$f['col'] . '_fin'] ?? '');
+        $v = ($ini !== '' && $fin !== '') ? substr($ini, 0, 5) . '-' . substr($fin, 0, 5) : '';
+    }
     return $v;
 }
 
@@ -103,20 +109,41 @@ if ($editar && $_SERVER['REQUEST_METHOD'] === 'POST') {
 $filas = listar($conn, $c['sp'] . '_LISTAR');
 
 // Listas de las tablas relacionadas (para los desplegables)
-$opciones = [];
-foreach ($c['campos'] as $f) {
-    if ($f['kind'] !== 'fk') continue;
-    $p = $cfg[$f['fk']];
+// Texto que se muestra para un registro: usa la 'etiqueta' de la config
+// ({COLUMNA} se reemplaza por su valor; si la columna es clave foranea,
+// se muestra el nombre del registro relacionado, ej. la bodega).
+function etiquetas($conn, $cfg, $nombre) {
+    $p = $cfg[$nombre];
+    $sub = [];
+    foreach ($p['campos'] as $f) {
+        if ($f['kind'] === 'fk') {
+            $q = $cfg[$f['fk']];
+            foreach (listar($conn, $q['sp'] . '_LISTAR') as $fila) {
+                $vals = $fila; unset($vals[strtoupper($q['pk'])]);
+                $sub[strtoupper($f['col'])][$fila[strtoupper($q['pk'])]] = (string)reset($vals);
+            }
+        }
+    }
     $mapa = [];
     foreach (listar($conn, $p['sp'] . '_LISTAR') as $fila) {
         $id = $fila[strtoupper($p['pk'])];
-        $partes = [];
-        foreach ($fila as $col => $val) {
-            if ($col !== strtoupper($p['pk'])) { $partes[] = $val; }
+        if (!empty($p['etiqueta'])) {
+            $txt = preg_replace_callback('/\{(\w+)\}/', function ($m) use ($fila, $sub) {
+                $v = $fila[$m[1]] ?? '';
+                return $sub[$m[1]][$v] ?? $v;
+            }, $p['etiqueta']);
+        } else {
+            $vals = $fila; unset($vals[strtoupper($p['pk'])]);
+            $txt = implode(' ', $vals);
         }
-        $mapa[$id] = ($p['auto'] ? '' : $id . ' - ') . implode(' ', $partes);
+        $mapa[$id] = $txt;
     }
-    $opciones[$f['col']] = $mapa;
+    return $mapa;
+}
+
+$opciones = [];
+foreach ($c['campos'] as $f) {
+    if ($f['kind'] === 'fk') { $opciones[$f['col']] = etiquetas($conn, $cfg, $f['fk']); }
 }
 
 function h($s) { return htmlspecialchars((string)$s); }
@@ -138,6 +165,10 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
             $v = $valor ?? 'S';
             return '<select name="' . $n . '"' . $fa . '><option value="S"' . ($v === 'S' ? ' selected' : '') .
                    '>S (activo)</option><option value="N"' . ($v === 'N' ? ' selected' : '') . '>N (inactivo)</option></select>';
+        case 'horario':
+            $partes = explode('-', (string)$valor);
+            return 'de <input type="time" name="' . $n . '_ini"' . $fa . ' value="' . h($partes[0] ?? '') . '" required>' .
+                   ' a <input type="time" name="' . $n . '_fin"' . $fa . ' value="' . h($partes[1] ?? '') . '" required>';
         case 'number':
             return '<input type="text" inputmode="numeric" pattern="[0-9]+" title="Solo números enteros" size="8" ' .
                    'oninput="this.value=this.value.replace(/[^0-9]/g,\'\')" name="' . $n . '"' . $fa . ' value="' . h($valor) . '" required>';

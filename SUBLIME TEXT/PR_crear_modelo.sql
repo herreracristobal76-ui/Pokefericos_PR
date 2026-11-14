@@ -1,90 +1,56 @@
--- http://localhost/inventario/login.php
--- http://localhost/test_oracle.php
-
 -- =====================================================================
 --  SISTEMA DE CONTROL DE INVENTARIO DE PERIFERICOS (Gold Gaming)
---  Modelo 3FN corregido - prefijo PR_
---  Script de creacion para Oracle (APEX SQL Workshop / SQL*Plus / SQL Developer)
+--  SCRIPT COMPLETO - Oracle Database 21c XE
 --
---  COMO EJECUTARLO EN APEX:
---    SQL Workshop > SQL Scripts > Create > pegar todo > Run
---    (no uses "SQL Commands": ejecuta una sola sentencia a la vez)
+--  Contiene: secuencias, tipos objeto, tablas (3FN), vistas, reglas de
+--  calidad de datos, procedimientos almacenados (CRUD de 11
+--  mantenedores, 5 gestores, 3 reportes), funciones, cursores,
+--  triggers y datos de prueba.
 --
---  Requiere Oracle 12c o superior (DEFAULT secuencia.NEXTVAL).
+--  COMO EJECUTARLO:
+--    SQL Developer, conectado como el usuario del proyecto (INVENTARIO),
+--    abrir este archivo y presionar F5 ("Ejecutar script").
 --
---  CAMBIOS RESPECTO A LA VERSION ANTERIOR (MF_CH_LP_):
---   1. Prefijo PR_ en tablas, secuencias, tipos y vistas. Los nombres de
---      constraints tambien llevan PR_ para no chocar con el esquema viejo.
---   2. IDENTITY reemplazado por SECUENCIAS explicitas (la pauta las pide).
---      Se siguen usando como DEFAULT: al insertar NO envies el ID.
---   3. NUEVAS: PR_Rol y PR_Usuario (control de acceso con perfiles).
---   4. PR_Movimiento_Stock: + ID_Ubicacion (en que estante ocurrio) y
---      + Nro_Orden (orden de compra que origino la entrada, opcional).
---      Asi se puede mantener PR_Producto_Ubicacion con un trigger/PA.
---   5. PR_Orden_Compra: Estado_Orden y Metodo_Pago ahora tienen valores
---      validos (CHECK) y Estado_Orden parte en 'PENDIENTE'.
---   6. PR_Examina: + ID_Examen (PK propia) y + Cantidad_Contada, para que
---      la auditoria compare lo contado contra lo registrado.
---   7. PR_Alerta_Reposicion: + Estado ('PENDIENTE' / 'ATENDIDA').
---   8. PR_Detalle_Compra: un producto no puede repetirse en la misma orden.
---   9. Parte OBJETO-RELACIONAL: tipos PR_T_Direccion, PR_T_Linea_Compra y
---      PR_T_Lineas_Compra (coleccion para pasar el detalle de una orden a
---      un procedimiento en una sola llamada).
---  10. Vistas: Stock_Producto compara stock por movimientos vs. stock en
---      estantes para detectar descuadres.
---
---  OJO: este script NO incluye aun procedimientos, funciones, cursores ni
---  triggers. Esos van en un script aparte, despues de este.
+--  ATENCION: la seccion 0 BORRA todos los objetos PR_ existentes y sus
+--  datos, para crear todo desde cero. Se puede ejecutar las veces que
+--  se quiera: siempre deja la base igual.
 -- =====================================================================
+SET DEFINE OFF
+SET SERVEROUTPUT ON
 
 
 -- ---------------------------------------------------------------------
--- 0. LIMPIEZA (solo si quieres volver a crear todo desde cero)
---    Quita los "--" y ejecuta. Orden: vistas -> hijas -> padres -> tipos
---    -> secuencias.
+-- 0. LIMPIEZA: borra los objetos PR_ si existen (no falla si no existen)
 -- ---------------------------------------------------------------------
--- DROP VIEW  PR_V_Bodega_Direccion;
--- DROP VIEW  PR_V_Orden_Total;
--- DROP VIEW  PR_V_Stock_Producto;
--- DROP TABLE PR_Detalle_Compra       CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Alerta_Reposicion    CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Movimiento_Stock     CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Producto_Ubicacion   CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Examina              CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Utiliza              CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Proveedor_Producto   CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Telefono_Proveedor   CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Usuario              CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Orden_Compra         CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Proveedor            CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Producto             CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Ubicacion_Estante    CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Operario             CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Lector_Codigo        CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Bodega               CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Marca                CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Categoria            CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Pais                 CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Rol                  CASCADE CONSTRAINTS PURGE;
--- DROP TABLE PR_Turno                CASCADE CONSTRAINTS PURGE;
--- DROP TYPE  PR_T_Lineas_Compra FORCE;
--- DROP TYPE  PR_T_Linea_Compra  FORCE;
--- DROP TYPE  PR_T_Direccion     FORCE;
--- DROP SEQUENCE PR_SEQ_Turno;
--- DROP SEQUENCE PR_SEQ_Pais;
--- DROP SEQUENCE PR_SEQ_Categoria;
--- DROP SEQUENCE PR_SEQ_Marca;
--- DROP SEQUENCE PR_SEQ_Bodega;
--- DROP SEQUENCE PR_SEQ_Ubicacion;
--- DROP SEQUENCE PR_SEQ_Producto;
--- DROP SEQUENCE PR_SEQ_Telefono;
--- DROP SEQUENCE PR_SEQ_Orden;
--- DROP SEQUENCE PR_SEQ_Movimiento;
--- DROP SEQUENCE PR_SEQ_Alerta;
--- DROP SEQUENCE PR_SEQ_Examen;
--- DROP SEQUENCE PR_SEQ_Rol;
--- DROP SEQUENCE PR_SEQ_Usuario;
-
+BEGIN
+    FOR r IN (SELECT view_name AS n FROM user_views
+               WHERE view_name LIKE 'PR\_%' ESCAPE '\') LOOP
+        EXECUTE IMMEDIATE 'DROP VIEW "' || r.n || '"';
+    END LOOP;
+    FOR r IN (SELECT table_name AS n FROM user_tables
+               WHERE table_name LIKE 'PR\_%' ESCAPE '\') LOOP
+        EXECUTE IMMEDIATE 'DROP TABLE "' || r.n || '" CASCADE CONSTRAINTS PURGE';
+    END LOOP;
+    FOR r IN (SELECT object_name AS n, object_type AS t FROM user_objects
+               WHERE object_name LIKE 'PR\_%' ESCAPE '\'
+                 AND object_type IN ('PROCEDURE', 'FUNCTION', 'PACKAGE')) LOOP
+        EXECUTE IMMEDIATE 'DROP ' || r.t || ' "' || r.n || '"';
+    END LOOP;
+    FOR r IN (SELECT type_name AS n FROM user_types
+               WHERE type_name LIKE 'PR\_%' ESCAPE '\'
+               ORDER BY CASE WHEN typecode = 'COLLECTION' THEN 0 ELSE 1 END) LOOP
+        BEGIN
+            EXECUTE IMMEDIATE 'DROP TYPE "' || r.n || '" FORCE';
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+    END LOOP;
+    FOR r IN (SELECT sequence_name AS n FROM user_sequences
+               WHERE sequence_name LIKE 'PR\_%' ESCAPE '\') LOOP
+        EXECUTE IMMEDIATE 'DROP SEQUENCE "' || r.n || '"';
+    END LOOP;
+    DBMS_OUTPUT.PUT_LINE('Limpieza terminada.');
+END;
+/
 
 -- =====================================================================
 -- 1. SECUENCIAS (generan los ID)
@@ -540,48 +506,98 @@ FROM   PR_Bodega b;
 
 
 -- =====================================================================
--- 8. DATOS DE PRUEBA (OPCIONAL)
---    Quita el "/*" y el "*/" y ejecuta UNA vez, solo con las tablas recien
---    creadas (los ID 1, 2, ... los entregan las secuencias).
---    Password_Hash es un texto de relleno: el hash real lo genera PHP.
+-- 8. REGLAS ADICIONALES DE CALIDAD DE DATOS
 -- =====================================================================
-/*
-INSERT INTO PR_Turno (Nombre_Turno, Horario_Turno, Supervisor_Turno)
-VALUES ('Manana', '08:00-16:00', 'Ana Soto');
-INSERT INTO PR_Rol (Nombre_Rol) VALUES ('ADMINISTRADOR');
-INSERT INTO PR_Rol (Nombre_Rol) VALUES ('SUPERVISOR');
-INSERT INTO PR_Rol (Nombre_Rol) VALUES ('OPERARIO');
-INSERT INTO PR_Categoria (Nombre_Categoria) VALUES ('Teclados');
-INSERT INTO PR_Marca (Nombre_Marca) VALUES ('Logitech');
-INSERT INTO PR_Bodega (Nombre_Recinto, Calle, Numero, Comuna)
-VALUES ('Bodega Central', 'Av. Lircay', 1234, 'Talca');
-INSERT INTO PR_Ubicacion_Estante (Pasillo, Nivel, ID_Bodega) VALUES (1, 2, 1);
-INSERT INTO PR_Operario (RUT_Operario, Nombres, Apellidos, ID_Turno)
-VALUES ('11.111.111-1', 'Pedro', 'Perez', 1);
-INSERT INTO PR_Usuario (Nombre_Usuario, Password_Hash, ID_Rol, RUT_Operario)
-VALUES ('admin', 'REEMPLAZAR_CON_HASH_DE_PHP', 1, NULL);
-INSERT INTO PR_Producto (Nombre_Producto, Precio_Venta, Stock_Minimo, ID_Categoria, ID_Marca)
-VALUES ('Teclado mecanico G915', 199990, 5, 1, 1);
+-- Nombres unicos sin distinguir mayusculas (Razer = RAZER = razer)
+CREATE UNIQUE INDEX PR_UX_MAR_NOMBRE  ON PR_Marca     (UPPER(Nombre_Marca));
+CREATE UNIQUE INDEX PR_UX_CAT_NOMBRE  ON PR_Categoria (UPPER(Nombre_Categoria));
+CREATE UNIQUE INDEX PR_UX_PAI_NOMBRE  ON PR_Pais      (UPPER(Nombre_Pais));
+CREATE UNIQUE INDEX PR_UX_TUR_NOMBRE  ON PR_Turno     (UPPER(Nombre_Turno));
+CREATE UNIQUE INDEX PR_UX_ROL_NOMBRE  ON PR_Rol       (UPPER(Nombre_Rol));
+CREATE UNIQUE INDEX PR_UX_USU_NOMBRE  ON PR_Usuario   (UPPER(Nombre_Usuario));
+CREATE UNIQUE INDEX PR_UX_PRO_NOM_MAR ON PR_Producto  (UPPER(Nombre_Producto), ID_Marca);
 
-INSERT INTO PR_Movimiento_Stock (Tipo_Movimiento, Cantidad_Afectada, ID_Producto, ID_Ubicacion, RUT_Operario)
-VALUES ('ENTRADA', 10, 1, 1, '11.111.111-1');
-INSERT INTO PR_Movimiento_Stock (Tipo_Movimiento, Cantidad_Afectada, ID_Producto, ID_Ubicacion, RUT_Operario)
-VALUES ('SALIDA', 6, 1, 1, '11.111.111-1');
--- Por ahora PR_Producto_Ubicacion se llena a mano (luego lo hara un trigger/PA):
-INSERT INTO PR_Producto_Ubicacion (ID_Producto, ID_Ubicacion, Cantidad) VALUES (1, 1, 4);
+-- Horario del turno: formato HH:MM-HH:MM con horas validas (00:00 a 23:59)
+ALTER TABLE PR_Turno ADD CONSTRAINT PR_CK_TUR_HORARIO
+  CHECK (REGEXP_LIKE(Horario_Turno,
+         '^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$'));
 
-COMMIT;
-
--- Deberia mostrar Stock_Actual = 4, Stock_En_Estantes = 4,
--- Requiere_Reposicion = 'SI' (4 <= 5) y Descuadre = 'NO':
-SELECT * FROM PR_V_Stock_Producto;
-SELECT * FROM PR_V_Bodega_Direccion;
-*/
+-- Nombres sin numeros en Marca, Categoria, Pais y Rol
+ALTER TABLE PR_Marca     ADD CONSTRAINT PR_CK_MAR_LETRAS
+  CHECK (REGEXP_LIKE(Nombre_Marca,     '^[[:alpha:]][[:alpha:] .&-]*$'));
+ALTER TABLE PR_Categoria ADD CONSTRAINT PR_CK_CAT_LETRAS
+  CHECK (REGEXP_LIKE(Nombre_Categoria, '^[[:alpha:]][[:alpha:] .&-]*$'));
+ALTER TABLE PR_Pais      ADD CONSTRAINT PR_CK_PAI_LETRAS
+  CHECK (REGEXP_LIKE(Nombre_Pais,      '^[[:alpha:]][[:alpha:] .&-]*$'));
+ALTER TABLE PR_Rol       ADD CONSTRAINT PR_CK_ROL_LETRAS
+  CHECK (REGEXP_LIKE(Nombre_Rol,       '^[[:alpha:]][[:alpha:] .&-]*$'));
 
 
+-- =====================================================================
+-- 9. TRIGGERS DE FORMATO (REDRAGON -> Redragon, sin espacios de mas)
+-- =====================================================================
+CREATE OR REPLACE TRIGGER PR_TRG_MARCA_NOMBRE
+BEFORE INSERT OR UPDATE OF Nombre_Marca ON PR_Marca
+FOR EACH ROW
+BEGIN
+    :NEW.Nombre_Marca := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombre_Marca), ' +', ' '));
+END;
+/
 
--- Tablas mantenedores: Marca, Categoría, Producto, Proveedor, Bodega, Ubicación, Operario, Turno, Rol y Usuario.
+CREATE OR REPLACE TRIGGER PR_TRG_CATEGORIA_NOMBRE
+BEFORE INSERT OR UPDATE OF Nombre_Categoria ON PR_Categoria
+FOR EACH ROW
+BEGIN
+    :NEW.Nombre_Categoria := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombre_Categoria), ' +', ' '));
+END;
+/
 
+CREATE OR REPLACE TRIGGER PR_TRG_PAIS_NOMBRE
+BEFORE INSERT OR UPDATE OF Nombre_Pais ON PR_Pais
+FOR EACH ROW
+BEGIN
+    :NEW.Nombre_Pais := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombre_Pais), ' +', ' '));
+END;
+/
+
+CREATE OR REPLACE TRIGGER PR_TRG_PRODUCTO_NOMBRE
+BEFORE INSERT OR UPDATE OF Nombre_Producto ON PR_Producto
+FOR EACH ROW
+BEGIN
+    :NEW.Nombre_Producto := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombre_Producto), ' +', ' '));
+END;
+/
+
+-- Horario: acepta "08001600", "08:00 - 16:00", "08.00-16.00"... y lo deja "08:00-16:00"
+CREATE OR REPLACE TRIGGER PR_TRG_TURNO_FORMATO
+BEFORE INSERT OR UPDATE OF Nombre_Turno, Horario_Turno, Supervisor_Turno ON PR_Turno
+FOR EACH ROW
+DECLARE
+    v_dig VARCHAR2(40);
+BEGIN
+    :NEW.Nombre_Turno     := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombre_Turno),     ' +', ' '));
+    :NEW.Supervisor_Turno := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Supervisor_Turno), ' +', ' '));
+    v_dig := REGEXP_REPLACE(:NEW.Horario_Turno, '[^0-9]', '');
+    IF LENGTH(v_dig) = 8 THEN
+        :NEW.Horario_Turno := SUBSTR(v_dig, 1, 2) || ':' || SUBSTR(v_dig, 3, 2) || '-' ||
+                              SUBSTR(v_dig, 5, 2) || ':' || SUBSTR(v_dig, 7, 2);
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER PR_TRG_OPERARIO_NOMBRE
+BEFORE INSERT OR UPDATE OF Nombres, Apellidos ON PR_Operario
+FOR EACH ROW
+BEGIN
+    :NEW.Nombres   := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Nombres),   ' +', ' '));
+    :NEW.Apellidos := INITCAP(REGEXP_REPLACE(TRIM(:NEW.Apellidos), ' +', ' '));
+END;
+/
+
+
+-- =====================================================================
+-- 10. LOGIN (la contrasena la verifica PHP con password_verify)
+-- =====================================================================
 CREATE OR REPLACE PROCEDURE PR_SP_OBTENER_USUARIO (
     p_nombre  IN  VARCHAR2,
     p_id      OUT NUMBER,
@@ -601,29 +617,35 @@ EXCEPTION
 END;
 /
 
-
-
 -- =====================================================================
---  PR_objetos_parte1.sql  (ejecutar con F5 conectado como INVENTARIO)
---  Parte 1: patron CRUD (Marca), funcion, gestor de movimientos,
---           cursor y trigger de control de stock + alerta.
+-- 11. MANTENEDORES (CRUD) - 11 tablas, cada uno con INSERTAR / LISTAR (cursor) /
+--     ACTUALIZAR / ELIMINAR
 -- =====================================================================
-
--- ---------------------------------------------------------------------
--- 1. MANTENEDOR MARCA (este patron se repite para los otros 9)
--- ---------------------------------------------------------------------
+-- ---------- PR_Marca ----------
 CREATE OR REPLACE PROCEDURE PR_SP_MARCA_INSERTAR (
-    p_nombre IN  VARCHAR2,
-    p_id     OUT NUMBER
+    p_nombre_marca IN VARCHAR2,
+    p_id OUT NUMBER
 ) AS
 BEGIN
-    INSERT INTO PR_Marca (Nombre_Marca) VALUES (TRIM(p_nombre))
+    INSERT INTO PR_Marca (Nombre_Marca)
+    VALUES (TRIM(p_nombre_marca))
     RETURNING ID_Marca INTO p_id;
     COMMIT;
 EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
         ROLLBACK;
-        RAISE_APPLICATION_ERROR(-20010, 'Ya existe una marca con ese nombre');
+        RAISE_APPLICATION_ERROR(-20010, 'Ya existe un registro con esos datos (valor duplicado)');
+    WHEN OTHERS THEN
+        ROLLBACK;
+        IF SQLCODE = -2291 THEN
+            RAISE_APPLICATION_ERROR(-20013, 'Referencia inexistente: revise los datos relacionados');
+        ELSIF SQLCODE = -2290 THEN
+            RAISE_APPLICATION_ERROR(-20014, 'Valor fuera del rango permitido');
+        ELSIF SQLCODE = -2292 THEN
+            RAISE_APPLICATION_ERROR(-20012, 'No se puede eliminar: tiene registros relacionados');
+        ELSE
+            RAISE;
+        END IF;
 END;
 /
 
@@ -634,178 +656,66 @@ BEGIN
     OPEN p_cursor FOR
         SELECT ID_Marca, Nombre_Marca
           FROM PR_Marca
-         ORDER BY Nombre_Marca;
+         ORDER BY ID_Marca;
 END;
 /
 
 CREATE OR REPLACE PROCEDURE PR_SP_MARCA_ACTUALIZAR (
-    p_id     IN NUMBER,
-    p_nombre IN VARCHAR2
+    p_id_marca IN NUMBER,
+    p_nombre_marca IN VARCHAR2
 ) AS
 BEGIN
-    UPDATE PR_Marca SET Nombre_Marca = TRIM(p_nombre) WHERE ID_Marca = p_id;
+    UPDATE PR_Marca
+       SET Nombre_Marca = TRIM(p_nombre_marca)
+     WHERE ID_Marca = p_id_marca;
     IF SQL%ROWCOUNT = 0 THEN
-        RAISE_APPLICATION_ERROR(-20011, 'La marca no existe');
+        RAISE_APPLICATION_ERROR(-20011, 'El registro no existe');
     END IF;
     COMMIT;
 EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
         ROLLBACK;
-        RAISE_APPLICATION_ERROR(-20010, 'Ya existe una marca con ese nombre');
+        RAISE_APPLICATION_ERROR(-20010, 'Ya existe un registro con esos datos (valor duplicado)');
+    WHEN OTHERS THEN
+        ROLLBACK;
+        IF SQLCODE = -2291 THEN
+            RAISE_APPLICATION_ERROR(-20013, 'Referencia inexistente: revise los datos relacionados');
+        ELSIF SQLCODE = -2290 THEN
+            RAISE_APPLICATION_ERROR(-20014, 'Valor fuera del rango permitido');
+        ELSIF SQLCODE = -2292 THEN
+            RAISE_APPLICATION_ERROR(-20012, 'No se puede eliminar: tiene registros relacionados');
+        ELSE
+            RAISE;
+        END IF;
 END;
 /
 
 CREATE OR REPLACE PROCEDURE PR_SP_MARCA_ELIMINAR (
-    p_id IN NUMBER
+    p_id_marca IN NUMBER
 ) AS
 BEGIN
-    DELETE FROM PR_Marca WHERE ID_Marca = p_id;
+    DELETE FROM PR_Marca WHERE ID_Marca = p_id_marca;
     IF SQL%ROWCOUNT = 0 THEN
-        RAISE_APPLICATION_ERROR(-20011, 'La marca no existe');
+        RAISE_APPLICATION_ERROR(-20011, 'El registro no existe');
     END IF;
     COMMIT;
 EXCEPTION
+    WHEN DUP_VAL_ON_INDEX THEN
+        ROLLBACK;
+        RAISE_APPLICATION_ERROR(-20010, 'Ya existe un registro con esos datos (valor duplicado)');
     WHEN OTHERS THEN
         ROLLBACK;
-        IF SQLCODE = -2292 THEN
-            RAISE_APPLICATION_ERROR(-20012, 'No se puede eliminar: hay productos con esta marca');
+        IF SQLCODE = -2291 THEN
+            RAISE_APPLICATION_ERROR(-20013, 'Referencia inexistente: revise los datos relacionados');
+        ELSIF SQLCODE = -2290 THEN
+            RAISE_APPLICATION_ERROR(-20014, 'Valor fuera del rango permitido');
+        ELSIF SQLCODE = -2292 THEN
+            RAISE_APPLICATION_ERROR(-20012, 'No se puede eliminar: tiene registros relacionados');
+        ELSE
+            RAISE;
         END IF;
-        RAISE;
 END;
 /
-
--- ---------------------------------------------------------------------
--- 2. FUNCION: stock actual de un producto (usa la vista)
--- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION PR_FN_STOCK_PRODUCTO (
-    p_id_producto IN NUMBER
-) RETURN NUMBER AS
-    v_stock NUMBER;
-BEGIN
-    SELECT Stock_Actual INTO v_stock
-      FROM PR_V_Stock_Producto
-     WHERE ID_Producto = p_id_producto;
-    RETURN v_stock;
-EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-        RETURN NULL;
-END;
-/
-
--- ---------------------------------------------------------------------
--- 3. TRIGGER: al registrar un movimiento actualiza el estante y genera
---    la alerta de reposicion cuando el stock baja del minimo.
---    (Lee solo PR_Producto_Ubicacion para evitar el error de tabla
---     mutante sobre PR_Movimiento_Stock.)
--- ---------------------------------------------------------------------
-CREATE OR REPLACE TRIGGER PR_TRG_MOV_STOCK
-AFTER INSERT ON PR_Movimiento_Stock
-FOR EACH ROW
-DECLARE
-    v_actual   NUMBER;
-    v_total    NUMBER;
-    v_minimo   NUMBER;
-    v_pend     NUMBER;
-BEGIN
-    IF :NEW.Tipo_Movimiento = 'ENTRADA' THEN
-        MERGE INTO PR_Producto_Ubicacion pu
-        USING (SELECT :NEW.ID_Producto AS idp, :NEW.ID_Ubicacion AS idu FROM dual) s
-           ON (pu.ID_Producto = s.idp AND pu.ID_Ubicacion = s.idu)
-         WHEN MATCHED THEN
-              UPDATE SET pu.Cantidad = pu.Cantidad + :NEW.Cantidad_Afectada
-         WHEN NOT MATCHED THEN
-              INSERT (ID_Producto, ID_Ubicacion, Cantidad)
-              VALUES (s.idp, s.idu, :NEW.Cantidad_Afectada);
-    ELSE
-        BEGIN
-            SELECT Cantidad INTO v_actual
-              FROM PR_Producto_Ubicacion
-             WHERE ID_Producto = :NEW.ID_Producto
-               AND ID_Ubicacion = :NEW.ID_Ubicacion;
-        EXCEPTION
-            WHEN NO_DATA_FOUND THEN v_actual := 0;
-        END;
-        IF v_actual < :NEW.Cantidad_Afectada THEN
-            RAISE_APPLICATION_ERROR(-20020,
-                'Stock insuficiente en el estante: hay ' || v_actual);
-        END IF;
-        UPDATE PR_Producto_Ubicacion
-           SET Cantidad = Cantidad - :NEW.Cantidad_Afectada
-         WHERE ID_Producto = :NEW.ID_Producto
-           AND ID_Ubicacion = :NEW.ID_Ubicacion;
-    END IF;
-
-    SELECT NVL(SUM(Cantidad), 0) INTO v_total
-      FROM PR_Producto_Ubicacion WHERE ID_Producto = :NEW.ID_Producto;
-    SELECT Stock_Minimo INTO v_minimo
-      FROM PR_Producto WHERE ID_Producto = :NEW.ID_Producto;
-
-    IF v_total <= v_minimo THEN
-        SELECT COUNT(*) INTO v_pend
-          FROM PR_Alerta_Reposicion
-         WHERE ID_Producto = :NEW.ID_Producto AND Estado_Alerta = 'PENDIENTE';
-        IF v_pend = 0 THEN
-            INSERT INTO PR_Alerta_Reposicion (ID_Producto) VALUES (:NEW.ID_Producto);
-        END IF;
-    END IF;
-END;
-/
-
--- ---------------------------------------------------------------------
--- 4. GESTOR: registrar un movimiento de stock
--- ---------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE PR_SP_REGISTRAR_MOVIMIENTO (
-    p_tipo        IN  VARCHAR2,
-    p_cantidad    IN  NUMBER,
-    p_id_producto IN  NUMBER,
-    p_id_ubicacion IN NUMBER,
-    p_rut         IN  VARCHAR2,
-    p_nro_orden   IN  NUMBER DEFAULT NULL,
-    p_id_mov      OUT NUMBER
-) AS
-BEGIN
-    INSERT INTO PR_Movimiento_Stock
-        (Tipo_Movimiento, Cantidad_Afectada, ID_Producto, ID_Ubicacion,
-         RUT_Operario, Nro_Orden)
-    VALUES
-        (UPPER(p_tipo), p_cantidad, p_id_producto, p_id_ubicacion,
-         p_rut, p_nro_orden)
-    RETURNING ID_Movimiento INTO p_id_mov;
-    COMMIT;
-EXCEPTION
-    WHEN OTHERS THEN
-        ROLLBACK;
-        RAISE;
-END;
-/
-
--- ---------------------------------------------------------------------
--- 5. PRUEBAS (ejecutar despues, una por una)
--- ---------------------------------------------------------------------
--- DECLARE v NUMBER; BEGIN PR_SP_MARCA_INSERTAR('Razer', v); DBMS_OUTPUT.PUT_LINE(v); END;
--- /
--- SELECT PR_FN_STOCK_PRODUCTO(1) FROM dual;
--- DECLARE v NUMBER; BEGIN
---   PR_SP_REGISTRAR_MOVIMIENTO('ENTRADA', 10, 1, 1, '11.111.111-1', NULL, v);
--- END;
--- /
--- SELECT * FROM PR_V_Stock_Producto;
--- SELECT * FROM PR_Alerta_Reposicion;
-
--- Agregar marca
--- INSERT INTO PR_Marca (Nombre_Marca) VALUES ('Corsair');
-
--- Eliminar Marca
--- DELETE FROM PR_Marca WHERE Nombre_Marca = 'Corsair';
--- COMMIT;
-
-
-
--- =====================================================================
---  PR_objetos_parte2.sql  (ejecutar con F5 conectado como INVENTARIO)
---  Mantenedores CRUD: Categoria, Pais, Turno, Rol, Bodega, Ubicacion,
---  Producto, Proveedor, Operario, Usuario (Marca ya esta en la parte 1).
--- =====================================================================
 
 -- ---------- PR_Categoria ----------
 CREATE OR REPLACE PROCEDURE PR_SP_CATEGORIA_INSERTAR (
@@ -1008,7 +918,7 @@ CREATE OR REPLACE PROCEDURE PR_SP_TURNO_INSERTAR (
 ) AS
 BEGIN
     INSERT INTO PR_Turno (Nombre_Turno, Horario_Turno, Supervisor_Turno)
-    VALUES (TRIM(p_nombre_turno), TRIM(p_horario_turno), TRIM(p_supervisor_turno))
+    VALUES (TRIM(p_nombre_turno), p_horario_turno, TRIM(p_supervisor_turno))
     RETURNING ID_Turno INTO p_id;
     COMMIT;
 EXCEPTION
@@ -1049,7 +959,7 @@ CREATE OR REPLACE PROCEDURE PR_SP_TURNO_ACTUALIZAR (
 BEGIN
     UPDATE PR_Turno
        SET Nombre_Turno = TRIM(p_nombre_turno),
-           Horario_Turno = TRIM(p_horario_turno),
+           Horario_Turno = p_horario_turno,
            Supervisor_Turno = TRIM(p_supervisor_turno)
      WHERE ID_Turno = p_id_turno;
     IF SQL%ROWCOUNT = 0 THEN
@@ -1817,7 +1727,7 @@ EXCEPTION
 END;
 /
 
--- ---------- Usuario: cambiar contraseña ----------
+-- ---------- Usuario: cambiar contrasena ----------
 CREATE OR REPLACE PROCEDURE PR_SP_USUARIO_CAMBIAR_CLAVE (
     p_id_usuario    IN NUMBER,
     p_password_hash IN VARCHAR2
@@ -1832,22 +1742,125 @@ BEGIN
 END;
 /
 
--- Comprobar que no hay errores de compilacion:
-SELECT object_name, object_type, status FROM user_objects
- WHERE object_type IN ('PROCEDURE','FUNCTION','TRIGGER') ORDER BY 1;
-SELECT name, line, text FROM user_errors ORDER BY name, sequence;
 
+-- =====================================================================
+-- 12. FUNCION DE STOCK, TRIGGER DE MOVIMIENTOS Y GESTOR DE MOVIMIENTOS
+-- =====================================================================
+-- ---------------------------------------------------------------------
+-- 2. FUNCION: stock actual de un producto (usa la vista)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION PR_FN_STOCK_PRODUCTO (
+    p_id_producto IN NUMBER
+) RETURN NUMBER AS
+    v_stock NUMBER;
+BEGIN
+    SELECT Stock_Actual INTO v_stock
+      FROM PR_V_Stock_Producto
+     WHERE ID_Producto = p_id_producto;
+    RETURN v_stock;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN NULL;
+END;
+/
 
+-- ---------------------------------------------------------------------
+-- 3. TRIGGER: al registrar un movimiento actualiza el estante y genera
+--    la alerta de reposicion cuando el stock baja del minimo.
+--    (Lee solo PR_Producto_Ubicacion para evitar el error de tabla
+--     mutante sobre PR_Movimiento_Stock.)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE TRIGGER PR_TRG_MOV_STOCK
+AFTER INSERT ON PR_Movimiento_Stock
+FOR EACH ROW
+DECLARE
+    v_actual   NUMBER;
+    v_total    NUMBER;
+    v_minimo   NUMBER;
+    v_pend     NUMBER;
+BEGIN
+    IF :NEW.Tipo_Movimiento = 'ENTRADA' THEN
+        MERGE INTO PR_Producto_Ubicacion pu
+        USING (SELECT :NEW.ID_Producto AS idp, :NEW.ID_Ubicacion AS idu FROM dual) s
+           ON (pu.ID_Producto = s.idp AND pu.ID_Ubicacion = s.idu)
+         WHEN MATCHED THEN
+              UPDATE SET pu.Cantidad = pu.Cantidad + :NEW.Cantidad_Afectada
+         WHEN NOT MATCHED THEN
+              INSERT (ID_Producto, ID_Ubicacion, Cantidad)
+              VALUES (s.idp, s.idu, :NEW.Cantidad_Afectada);
+    ELSE
+        BEGIN
+            SELECT Cantidad INTO v_actual
+              FROM PR_Producto_Ubicacion
+             WHERE ID_Producto = :NEW.ID_Producto
+               AND ID_Ubicacion = :NEW.ID_Ubicacion;
+        EXCEPTION
+            WHEN NO_DATA_FOUND THEN v_actual := 0;
+        END;
+        IF v_actual < :NEW.Cantidad_Afectada THEN
+            RAISE_APPLICATION_ERROR(-20020,
+                'Stock insuficiente en el estante: hay ' || v_actual);
+        END IF;
+        UPDATE PR_Producto_Ubicacion
+           SET Cantidad = Cantidad - :NEW.Cantidad_Afectada
+         WHERE ID_Producto = :NEW.ID_Producto
+           AND ID_Ubicacion = :NEW.ID_Ubicacion;
+    END IF;
 
+    SELECT NVL(SUM(Cantidad), 0) INTO v_total
+      FROM PR_Producto_Ubicacion WHERE ID_Producto = :NEW.ID_Producto;
+    SELECT Stock_Minimo INTO v_minimo
+      FROM PR_Producto WHERE ID_Producto = :NEW.ID_Producto;
 
+    IF v_total <= v_minimo THEN
+        SELECT COUNT(*) INTO v_pend
+          FROM PR_Alerta_Reposicion
+         WHERE ID_Producto = :NEW.ID_Producto AND Estado_Alerta = 'PENDIENTE';
+        IF v_pend = 0 THEN
+            INSERT INTO PR_Alerta_Reposicion (ID_Producto) VALUES (:NEW.ID_Producto);
+        END IF;
+    END IF;
+END;
+/
+
+-- ---------------------------------------------------------------------
+-- 4. GESTOR: registrar un movimiento de stock
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE PR_SP_REGISTRAR_MOVIMIENTO (
+    p_tipo        IN  VARCHAR2,
+    p_cantidad    IN  NUMBER,
+    p_id_producto IN  NUMBER,
+    p_id_ubicacion IN NUMBER,
+    p_rut         IN  VARCHAR2,
+    p_nro_orden   IN  NUMBER DEFAULT NULL,
+    p_id_mov      OUT NUMBER
+) AS
+BEGIN
+    INSERT INTO PR_Movimiento_Stock
+        (Tipo_Movimiento, Cantidad_Afectada, ID_Producto, ID_Ubicacion,
+         RUT_Operario, Nro_Orden)
+    VALUES
+        (UPPER(p_tipo), p_cantidad, p_id_producto, p_id_ubicacion,
+         p_rut, p_nro_orden)
+    RETURNING ID_Movimiento INTO p_id_mov;
+    COMMIT;
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        IF SQLCODE = -2291 THEN
+            RAISE_APPLICATION_ERROR(-20013, 'Producto, estante, operario u orden inexistente');
+        ELSIF SQLCODE = -2290 THEN
+            RAISE_APPLICATION_ERROR(-20014, 'Tipo de movimiento o cantidad no valida');
+        ELSE
+            RAISE;
+        END IF;
+END;
+/
 
 
 -- =====================================================================
---  PR_objetos_parte3.sql  (ejecutar con F5 conectado como INVENTARIO)
---  Gestores (5), reportes (3) y triggers de control.
---  Requiere haber ejecutado antes las partes 1 y 2.
+-- 13-14. GESTORES, REPORTES Y TRIGGERS DE ORDENES
 -- =====================================================================
-
 -- ---------------------------------------------------------------------
 -- TRIGGERS DE CONTROL SOBRE ORDENES DE COMPRA
 -- ---------------------------------------------------------------------
@@ -1875,8 +1888,12 @@ FOR EACH ROW
 DECLARE
     v_estado PR_Orden_Compra.Estado_Orden%TYPE;
 BEGIN
-    SELECT Estado_Orden INTO v_estado
-      FROM PR_Orden_Compra WHERE Nro_Orden = :NEW.Nro_Orden;
+    BEGIN
+        SELECT Estado_Orden INTO v_estado
+          FROM PR_Orden_Compra WHERE Nro_Orden = :NEW.Nro_Orden;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN RETURN;   -- la FK informara que la orden no existe
+    END;
     IF v_estado <> 'PENDIENTE' THEN
         RAISE_APPLICATION_ERROR(-20031,
             'La orden esta ' || v_estado || ': ya no se pueden modificar sus lineas');
@@ -2276,9 +2293,250 @@ BEGIN
           FROM PR_Proveedor pr
           LEFT JOIN PR_V_Orden_Total v ON v.RUT_Proveedor = pr.RUT_Proveedor
          GROUP BY pr.Nombre_Empresa
-         ORDER BY Monto_Total DESC, pr.Nombre_Empresa;
+         ORDER BY 4 DESC, 1;
 END;
 /
 
--- Comprobar que no hay errores de compilacion (debe salir vacio):
+
+-- =====================================================================
+-- 15. OBJETO-RELACIONAL: orden completa en una sola llamada
+--     Recibe la coleccion PR_T_Lineas_Compra (tabla de PR_T_Linea_Compra)
+--     y usa el metodo Subtotal() del tipo.
+-- =====================================================================
+CREATE OR REPLACE FUNCTION PR_FN_TOTAL_LINEAS (
+    p_lineas IN PR_T_Lineas_Compra
+) RETURN NUMBER AS
+    v_total NUMBER := 0;
+BEGIN
+    IF p_lineas IS NULL THEN
+        RETURN 0;
+    END IF;
+    FOR i IN 1 .. p_lineas.COUNT LOOP
+        v_total := v_total + p_lineas(i).Subtotal();
+    END LOOP;
+    RETURN v_total;
+END;
+/
+
+CREATE OR REPLACE PROCEDURE PR_SP_ORDEN_CREAR_COMPLETA (
+    p_rut_proveedor IN  VARCHAR2,
+    p_metodo_pago   IN  VARCHAR2,
+    p_lineas        IN  PR_T_Lineas_Compra,
+    p_nro           OUT NUMBER
+) AS
+BEGIN
+    IF p_lineas IS NULL OR p_lineas.COUNT = 0 THEN
+        RAISE_APPLICATION_ERROR(-20032, 'La orden debe tener al menos una linea');
+    END IF;
+
+    INSERT INTO PR_Orden_Compra (Metodo_Pago, RUT_Proveedor)
+    VALUES (UPPER(p_metodo_pago), p_rut_proveedor)
+    RETURNING Nro_Orden INTO p_nro;
+
+    FOR i IN 1 .. p_lineas.COUNT LOOP
+        INSERT INTO PR_Detalle_Compra
+            (Nro_Orden, ID_Detalle, Costo_Unitario, Cantidad_Solicitada, ID_Producto)
+        VALUES
+            (p_nro, i, p_lineas(i).Costo_Unitario, p_lineas(i).Cantidad, p_lineas(i).ID_Producto);
+    END LOOP;
+    COMMIT;
+EXCEPTION
+    WHEN DUP_VAL_ON_INDEX THEN
+        ROLLBACK;
+        RAISE_APPLICATION_ERROR(-20010, 'Un producto esta repetido en la orden');
+    WHEN OTHERS THEN
+        ROLLBACK;
+        IF SQLCODE = -2291 THEN
+            RAISE_APPLICATION_ERROR(-20013, 'El proveedor o algun producto no existe');
+        ELSIF SQLCODE = -2290 THEN
+            RAISE_APPLICATION_ERROR(-20014, 'Metodo de pago, cantidad o costo no valido');
+        ELSE
+            RAISE;
+        END IF;
+END;
+/
+
+
+-- =====================================================================
+-- 16. DATOS DE PRUEBA
+--     Se cargan usando los mismos procedimientos de la aplicacion, asi
+--     los triggers mantienen el stock por estante y generan las alertas.
+--     Usuarios:  admin / admin123      (ADMINISTRADOR)
+--                supervisor / super123 (SUPERVISOR)
+--                operario / oper123    (OPERARIO)
+-- =====================================================================
+DECLARE
+    t1 NUMBER; t2 NUMBER; t3 NUMBER;
+    r_adm NUMBER; r_sup NUMBER; r_ope NUMBER;
+    pa_cl NUMBER; pa_cn NUMBER;
+    c_tec NUMBER; c_mou NUMBER; c_aud NUMBER; c_mon NUMBER; c_mic NUMBER;
+    m_log NUMBER; m_raz NUMBER; m_red NUMBER; m_cor NUMBER; m_asu NUMBER;
+    b_cen NUMBER; b_nor NUMBER;
+    u1 NUMBER; u2 NUMBER; u3 NUMBER; u4 NUMBER;
+    p1 NUMBER; p2 NUMBER; p3 NUMBER; p4 NUMBER; p5 NUMBER; p6 NUMBER; p7 NUMBER;
+    n_ord NUMBER; v_id NUMBER; v_alerta NUMBER; v_dif NUMBER;
+
+    -- Movimiento con fecha en el pasado (para que los reportes tengan historia)
+    PROCEDURE mov (p_tipo VARCHAR2, p_cant NUMBER, p_prod NUMBER, p_ubi NUMBER,
+                   p_rut VARCHAR2, p_meses_atras NUMBER) IS
+    BEGIN
+        INSERT INTO PR_Movimiento_Stock
+            (Tipo_Movimiento, Cantidad_Afectada, Fecha_Movimiento,
+             ID_Producto, ID_Ubicacion, RUT_Operario)
+        VALUES
+            (p_tipo, p_cant, ADD_MONTHS(SYSDATE, -p_meses_atras),
+             p_prod, p_ubi, p_rut);
+    END;
+BEGIN
+    -- Turnos, roles, paises
+    PR_SP_TURNO_INSERTAR('Manana', '08:00-16:00', 'Ana Soto', t1);
+    PR_SP_TURNO_INSERTAR('Tarde',  '16:00-00:00', 'Luis Rojas', t2);
+    PR_SP_TURNO_INSERTAR('Noche',  '00:00-08:00', 'Carla Munoz', t3);
+    PR_SP_ROL_INSERTAR('ADMINISTRADOR', r_adm);
+    PR_SP_ROL_INSERTAR('SUPERVISOR', r_sup);
+    PR_SP_ROL_INSERTAR('OPERARIO', r_ope);
+    PR_SP_PAIS_INSERTAR('Chile', pa_cl);
+    PR_SP_PAIS_INSERTAR('China', pa_cn);
+
+    -- Categorias y marcas
+    PR_SP_CATEGORIA_INSERTAR('Teclados', c_tec);
+    PR_SP_CATEGORIA_INSERTAR('Mouse', c_mou);
+    PR_SP_CATEGORIA_INSERTAR('Audifonos', c_aud);
+    PR_SP_CATEGORIA_INSERTAR('Monitores', c_mon);
+    PR_SP_CATEGORIA_INSERTAR('Microfonos', c_mic);
+    PR_SP_MARCA_INSERTAR('Logitech', m_log);
+    PR_SP_MARCA_INSERTAR('Razer', m_raz);
+    PR_SP_MARCA_INSERTAR('Redragon', m_red);
+    PR_SP_MARCA_INSERTAR('Corsair', m_cor);
+    PR_SP_MARCA_INSERTAR('Asus', m_asu);
+
+    -- Bodegas y estantes
+    PR_SP_BODEGA_INSERTAR('Bodega Central', 'Av. Lircay', 1234, 'Talca', b_cen);
+    PR_SP_BODEGA_INSERTAR('Bodega Norte', '1 Norte', 950, 'Talca', b_nor);
+    PR_SP_UBICACION_INSERTAR(1, 1, b_cen, u1);
+    PR_SP_UBICACION_INSERTAR(1, 2, b_cen, u2);
+    PR_SP_UBICACION_INSERTAR(2, 1, b_cen, u3);
+    PR_SP_UBICACION_INSERTAR(1, 1, b_nor, u4);
+
+    -- Operarios y usuarios (hash bcrypt generado con password_hash de PHP)
+    PR_SP_OPERARIO_INSERTAR('11.111.111-1', 'Pedro', 'Perez', t1);
+    PR_SP_OPERARIO_INSERTAR('22.222.222-2', 'Camila', 'Torres', t2);
+    PR_SP_OPERARIO_INSERTAR('33.333.333-3', 'Diego', 'Fuentes', t3);
+    PR_SP_USUARIO_INSERTAR('admin',
+        '$2y$10$3bJJti1bYT7n0HBS1msrY.ZfLX2/d1mEub2csgJ/ZYEHq.tz3dVC.', r_adm, NULL, 'S', v_id);
+    PR_SP_USUARIO_INSERTAR('supervisor',
+        '$2y$10$Bx.Gf2sBXwcDNPZJqY3dBukuh371jVW8GhJy3zysHNPLUZcDDV2ke', r_sup, '22.222.222-2', 'S', v_id);
+    PR_SP_USUARIO_INSERTAR('operario',
+        '$2y$10$IoWoeqdN2Mfi5Yys079xS.cbUlUccPoLn1Jh6.Dy.LrNBLcllruWS', r_ope, '11.111.111-1', 'S', v_id);
+
+    -- Productos (nombre, precio, stock minimo, categoria, marca)
+    PR_SP_PRODUCTO_INSERTAR('Teclado Mecanico G915', 199990, 5, c_tec, m_log, p1);
+    PR_SP_PRODUCTO_INSERTAR('Mouse Deathadder V3',    69990, 8, c_mou, m_raz, p2);
+    PR_SP_PRODUCTO_INSERTAR('Teclado Kumara K552',    39990, 6, c_tec, m_red, p3);
+    PR_SP_PRODUCTO_INSERTAR('Audifonos Void Elite',   89990, 4, c_aud, m_cor, p4);
+    PR_SP_PRODUCTO_INSERTAR('Monitor Gamer 24',      179990, 3, c_mon, m_asu, p5);
+    PR_SP_PRODUCTO_INSERTAR('Mouse G502 Hero',        49990, 10, c_mou, m_log, p6);
+    PR_SP_PRODUCTO_INSERTAR('Microfono Seiren Mini',  59990, 3, c_mic, m_raz, p7);
+
+    -- Proveedores, telefonos y que productos ofrece cada uno
+    PR_SP_PROVEEDOR_INSERTAR('12.345.678-9', 'Distribuidora Tech', pa_cl);
+    PR_SP_PROVEEDOR_INSERTAR('76.543.210-K', 'Shenzhen Gaming Ltd', pa_cn);
+    INSERT INTO PR_Telefono_Proveedor (Numero_Contacto, RUT_Proveedor) VALUES ('+56 71 2345678', '12.345.678-9');
+    INSERT INTO PR_Telefono_Proveedor (Numero_Contacto, RUT_Proveedor) VALUES ('+56 9 87654321', '12.345.678-9');
+    INSERT INTO PR_Telefono_Proveedor (Numero_Contacto, RUT_Proveedor) VALUES ('+86 755 12345678', '76.543.210-K');
+    INSERT INTO PR_Proveedor_Producto VALUES ('12.345.678-9', p1);
+    INSERT INTO PR_Proveedor_Producto VALUES ('12.345.678-9', p2);
+    INSERT INTO PR_Proveedor_Producto VALUES ('12.345.678-9', p3);
+    INSERT INTO PR_Proveedor_Producto VALUES ('12.345.678-9', p4);
+    INSERT INTO PR_Proveedor_Producto VALUES ('12.345.678-9', p7);
+    INSERT INTO PR_Proveedor_Producto VALUES ('76.543.210-K', p3);
+    INSERT INTO PR_Proveedor_Producto VALUES ('76.543.210-K', p5);
+    INSERT INTO PR_Proveedor_Producto VALUES ('76.543.210-K', p6);
+
+    -- Lectores de codigo y quien los usa
+    INSERT INTO PR_Lector_Codigo VALUES ('LX-1001', 85);
+    INSERT INTO PR_Lector_Codigo VALUES ('LX-1002', 40);
+    INSERT INTO PR_Utiliza VALUES ('11.111.111-1', 'LX-1001');
+    INSERT INTO PR_Utiliza VALUES ('22.222.222-2', 'LX-1002');
+
+    -- Stock inicial (hace 2 meses)
+    mov('ENTRADA', 30, p1, u1, '11.111.111-1', 2);
+    mov('ENTRADA', 25, p2, u2, '11.111.111-1', 2);
+    mov('ENTRADA', 20, p3, u2, '11.111.111-1', 2);
+    mov('ENTRADA', 12, p4, u3, '22.222.222-2', 2);
+    mov('ENTRADA',  8, p5, u4, '22.222.222-2', 2);
+    mov('ENTRADA', 40, p6, u1, '11.111.111-1', 2);
+    mov('ENTRADA', 10, p6, u4, '22.222.222-2', 2);
+
+    -- Ventas del mes pasado
+    mov('SALIDA', 12, p1, u1, '11.111.111-1', 1);
+    mov('SALIDA',  9, p2, u2, '11.111.111-1', 1);
+    mov('SALIDA',  4, p3, u2, '22.222.222-2', 1);
+    mov('SALIDA',  2, p5, u4, '22.222.222-2', 1);
+
+    -- Ventas de este mes (Mouse Deathadder y Audifonos quedan bajo el minimo -> alertas)
+    mov('SALIDA',  8, p1, u1, '11.111.111-1', 0);
+    mov('SALIDA', 10, p2, u2, '11.111.111-1', 0);
+    mov('SALIDA',  3, p3, u2, '22.222.222-2', 0);
+    mov('SALIDA',  9, p4, u3, '22.222.222-2', 0);
+    mov('SALIDA', 15, p6, u1, '33.333.333-3', 0);
+    COMMIT;
+
+    -- Orden 1: creada en una sola llamada con la coleccion de lineas (objeto-relacional),
+    -- enviada y recepcionada en Bodega Central pasillo 1 nivel 1
+    PR_SP_ORDEN_CREAR_COMPLETA('12.345.678-9', 'TRANSFERENCIA',
+        PR_T_Lineas_Compra(PR_T_Linea_Compra(p1, 10, 150000),
+                           PR_T_Linea_Compra(p7,  6,  45000)), n_ord);
+    PR_SP_ORDEN_CAMBIAR_ESTADO(n_ord, 'ENVIADA');
+    PR_SP_ORDEN_RECEPCIONAR(n_ord, u1, '11.111.111-1');
+
+    -- Orden 2: enviada y recepcionada en Bodega Norte
+    PR_SP_ORDEN_CREAR('76.543.210-K', 'CREDITO', n_ord);
+    PR_SP_ORDEN_AGREGAR_LINEA(n_ord, p5, 5, 120000);
+    PR_SP_ORDEN_CAMBIAR_ESTADO(n_ord, 'ENVIADA');
+    PR_SP_ORDEN_RECEPCIONAR(n_ord, u4, '22.222.222-2');
+
+    -- Orden 3: queda PENDIENTE
+    PR_SP_ORDEN_CREAR('12.345.678-9', 'TARJETA', n_ord);
+    PR_SP_ORDEN_AGREGAR_LINEA(n_ord, p3, 10, 25000);
+
+    -- Orden 4: enviada y luego cancelada
+    PR_SP_ORDEN_CREAR('76.543.210-K', 'CONTADO', n_ord);
+    PR_SP_ORDEN_AGREGAR_LINEA(n_ord, p6, 20, 30000);
+    PR_SP_ORDEN_CAMBIAR_ESTADO(n_ord, 'ENVIADA');
+    PR_SP_ORDEN_CAMBIAR_ESTADO(n_ord, 'CANCELADA');
+
+    -- Orden 5: generada desde la alerta de los audifonos (la alerta queda ATENDIDA)
+    SELECT ID_Alerta INTO v_alerta
+      FROM PR_Alerta_Reposicion
+     WHERE ID_Producto = p4 AND Estado_Alerta = 'PENDIENTE';
+    PR_SP_REPONER_DESDE_ALERTA(v_alerta, '12.345.678-9', 'TRANSFERENCIA', 55000, n_ord);
+
+    -- Auditorias fisicas (una coincide, otra con diferencia de -1)
+    PR_SP_REGISTRAR_EXAMEN('11.111.111-1', p1, u1, 20, v_id, v_dif);
+    PR_SP_REGISTRAR_EXAMEN('22.222.222-2', p2, u2, 5, v_id, v_dif);
+
+    DBMS_OUTPUT.PUT_LINE('Datos de prueba cargados correctamente.');
+END;
+/
+
+
+-- =====================================================================
+-- 17. VERIFICACION FINAL
+-- =====================================================================
+-- a) Errores de compilacion (debe salir VACIO)
 SELECT name, type, line, text FROM user_errors ORDER BY name, sequence;
+
+-- b) Objetos invalidos (debe salir VACIO)
+SELECT object_name, object_type FROM user_objects
+ WHERE status <> 'VALID' AND object_name LIKE 'PR\_%' ESCAPE '\';
+
+-- c) Resumen de objetos creados
+SELECT object_type, COUNT(*) AS cantidad FROM user_objects
+ WHERE object_name LIKE 'PR\_%' ESCAPE '\'
+ GROUP BY object_type ORDER BY object_type;
+
+-- d) Stock (Descuadre debe ser NO en todos)
+SELECT * FROM PR_V_Stock_Producto ORDER BY ID_Producto;
+SELECT * FROM PR_V_Orden_Total ORDER BY Nro_Orden;
+SELECT * FROM PR_V_Bodega_Direccion;
