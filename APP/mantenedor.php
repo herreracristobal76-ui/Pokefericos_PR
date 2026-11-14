@@ -8,8 +8,12 @@ $e = $_GET['e'] ?? '';
 if (!isset($cfg[$e])) { die('Mantenedor no existe'); }
 $c = $cfg[$e];
 
-if (!isset($_SESSION['usuario']) || !in_array($_SESSION['rol'], $c['roles'])) {
-    header('Location: login.php'); exit;
+if (!isset($_SESSION['usuario'])) { header('Location: login.php'); exit; }
+$editar = in_array($_SESSION['rol'], $c['roles']);
+$ver    = $editar || in_array($_SESSION['rol'], $c['ver']);
+if (!$ver) {
+    http_response_code(403);
+    die('Sin permiso para esta sección. <a href="panel.php">Volver al panel</a>');
 }
 $conn = conectar();
 $msg = '';
@@ -52,11 +56,12 @@ function listar($conn, $proc) {
 function valorCampo($f, $post) {
     $v = trim($post[$f['col']] ?? '');
     if ($v === '' && $f['null']) { return null; }
+    if ($f['kind'] === 'decimal') { $v = str_replace(',', '.', $v); }
     return $v;
 }
 
 // ---------- Acciones ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($editar && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $accion = $_POST['accion'] ?? '';
     $pk = trim($_POST['pk'] ?? '');
 
@@ -134,9 +139,11 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
             return '<select name="' . $n . '"' . $fa . '><option value="S"' . ($v === 'S' ? ' selected' : '') .
                    '>S (activo)</option><option value="N"' . ($v === 'N' ? ' selected' : '') . '>N (inactivo)</option></select>';
         case 'number':
-            return '<input type="number" name="' . $n . '"' . $fa . ' value="' . h($valor) . '" required>';
+            return '<input type="text" inputmode="numeric" pattern="[0-9]+" title="Solo números enteros" size="8" ' .
+                   'oninput="this.value=this.value.replace(/[^0-9]/g,\'\')" name="' . $n . '"' . $fa . ' value="' . h($valor) . '" required>';
         case 'decimal':
-            return '<input type="number" step="0.01" min="0" name="' . $n . '"' . $fa . ' value="' . h($valor) . '" required>';
+            return '<input type="text" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" title="Número, con hasta 2 decimales" size="10" ' .
+                   'oninput="this.value=this.value.replace(/[^0-9.,]/g,\'\')" name="' . $n . '"' . $fa . ' value="' . h($valor) . '" required>';
         case 'password':
             return '<input type="password" name="' . $n . '"' . $fa . ' placeholder="' .
                    ($requerido ? '' : 'dejar vacío para no cambiar') . '"' . ($requerido ? ' required' : '') . '>';
@@ -158,6 +165,7 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
   <p><a href="panel.php">← Volver al panel</a></p>
   <?php if ($msg): ?><p class="<?= $ok ? 'ok' : 'err' ?>"><b><?= h($msg) ?></b></p><?php endif; ?>
 
+  <?php if ($editar): ?>
   <h3>Nuevo registro</h3>
   <form method="post">
     <input type="hidden" name="accion" value="crear">
@@ -170,6 +178,7 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
     <button>Crear</button>
   </form>
   <br>
+  <?php endif; ?>
 
   <table>
     <tr>
@@ -177,26 +186,31 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
       <?php foreach ($c['campos'] as $f): if (!$f['lst'] && !$f['upd'] && $f['kind'] !== 'password') continue; ?>
         <th><?= h($f['label']) ?></th>
       <?php endforeach; ?>
-      <th>Acciones</th>
+      <?php if ($editar): ?><th>Acciones</th><?php endif; ?>
     </tr>
     <?php foreach ($filas as $r): $id = $r[strtoupper($c['pk'])]; $fid = 'f' . md5((string)$id); ?>
     <tr>
       <td>
+        <?php if ($editar): ?>
         <form id="<?= $fid ?>" method="post">
           <input type="hidden" name="accion" value="actualizar">
           <input type="hidden" name="pk" value="<?= h($id) ?>">
         </form>
+        <?php endif; ?>
         <?= h($id) ?>
       </td>
       <?php foreach ($c['campos'] as $f): if (!$f['lst'] && !$f['upd'] && $f['kind'] !== 'password') continue; ?>
         <td>
-        <?php if ($f['upd'] || $f['kind'] === 'password'): ?>
+        <?php if ($editar && ($f['upd'] || $f['kind'] === 'password')): ?>
           <?= campoHtml($f, $r[strtoupper($f['col'])] ?? null, $opciones, false, $fid) ?>
-        <?php else: ?>
+        <?php elseif ($f['kind'] === 'fk'): ?>
+          <?= h($opciones[$f['col']][$r[strtoupper($f['col'])] ?? ''] ?? ($r[strtoupper($f['col'])] ?? '')) ?>
+        <?php elseif ($f['kind'] !== 'password'): ?>
           <?= h($r[strtoupper($f['col'])] ?? '') ?>
         <?php endif; ?>
         </td>
       <?php endforeach; ?>
+      <?php if ($editar): ?>
       <td>
         <button form="<?= $fid ?>">Guardar</button>
         <form method="post" style="display:inline" onsubmit="return confirm('¿Eliminar?')">
@@ -205,6 +219,7 @@ function campoHtml($f, $valor, $opciones, $requerido = true, $form = '') {
           <button>Eliminar</button>
         </form>
       </td>
+      <?php endif; ?>
     </tr>
     <?php endforeach; ?>
   </table>
